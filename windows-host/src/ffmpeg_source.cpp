@@ -14,12 +14,17 @@ std::string FfmpegSource::command() const {
     if (settings_.displayIndex >= 0) {
         out << " -f lavfi -i ddagrab=output_idx=" << settings_.displayIndex
             << ":framerate=" << settings_.fps
-            << ":draw_mouse=1,hwdownload,format=bgra";
+            << ":draw_mouse=1:dup_frames=0";
+        if (!settings_.zeroCopy) {
+            // Required when the captured monitor and NVENC live on different GPUs
+            // (for example, the OMEN internal AMD display and its RTX encoder).
+            out << ",hwdownload,format=bgra";
+        }
     } else {
         out << " -f lavfi -i testsrc2=size=" << settings_.width << 'x' << settings_.height
             << ":rate=" << settings_.fps << " -pix_fmt nv12";
     }
-    out << " -an -c:v h264_nvenc -preset p1 -tune ull"
+    out << " -an -fps_mode passthrough -c:v h264_nvenc -preset p1 -tune ull"
         << " -rc cbr -b:v " << bitrateK << "k -maxrate " << bitrateK << "k"
         << " -bufsize " << (bitrateK / 30U) << "k"
         << " -g " << settings_.fps << " -bf 0 -zerolatency 1 -forced-idr 1"
