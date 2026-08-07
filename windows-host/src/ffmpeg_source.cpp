@@ -16,13 +16,12 @@ std::string FfmpegSource::command() const {
             // A source filter inside -filter_complex receives -filter_hw_device.
             // This is required for displays owned by a non-default DXGI adapter.
             out << " -init_hw_device d3d11va=padbridge:" << settings_.adapterIndex
-                << " -filter_hw_device padbridge -filter_complex \"ddagrab=output_idx="
+                << " -filter_hw_device padbridge -filter_complex ddagrab=output_idx="
                 << settings_.displayIndex << ":framerate=" << settings_.fps
                 << ":draw_mouse=1:dup_frames=0";
             if (!settings_.zeroCopy) {
                 out << ",hwdownload,format=bgra";
             }
-            out << '"';
         } else {
             out << " -f lavfi -i ddagrab=output_idx=" << settings_.displayIndex
                 << ":framerate=" << settings_.fps
