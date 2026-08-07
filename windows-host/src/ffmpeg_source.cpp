@@ -12,13 +12,26 @@ std::string FfmpegSource::command() const {
     out << '"' << settings_.ffmpegPath << '"'
         << " -hide_banner -loglevel warning";
     if (settings_.displayIndex >= 0) {
-        out << " -f lavfi -i ddagrab=output_idx=" << settings_.displayIndex
-            << ":framerate=" << settings_.fps
-            << ":draw_mouse=1:dup_frames=0";
-        if (!settings_.zeroCopy) {
-            // Required when the captured monitor and NVENC live on different GPUs
-            // (for example, the OMEN internal AMD display and its RTX encoder).
-            out << ",hwdownload,format=bgra";
+        if (settings_.adapterIndex >= 0) {
+            // A source filter inside -filter_complex receives -filter_hw_device.
+            // This is required for displays owned by a non-default DXGI adapter.
+            out << " -init_hw_device d3d11va=padbridge:" << settings_.adapterIndex
+                << " -filter_hw_device padbridge -filter_complex \"ddagrab=output_idx="
+                << settings_.displayIndex << ":framerate=" << settings_.fps
+                << ":draw_mouse=1:dup_frames=0";
+            if (!settings_.zeroCopy) {
+                out << ",hwdownload,format=bgra";
+            }
+            out << '"';
+        } else {
+            out << " -f lavfi -i ddagrab=output_idx=" << settings_.displayIndex
+                << ":framerate=" << settings_.fps
+                << ":draw_mouse=1:dup_frames=0";
+            if (!settings_.zeroCopy) {
+                // Required when the captured monitor and NVENC live on different GPUs
+                // (for example, the OMEN internal AMD display and its RTX encoder).
+                out << ",hwdownload,format=bgra";
+            }
         }
     } else {
         out << " -f lavfi -i testsrc2=size=" << settings_.width << 'x' << settings_.height

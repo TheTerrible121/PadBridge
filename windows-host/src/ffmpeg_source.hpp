@@ -14,6 +14,7 @@ struct EncoderSettings {
     std::uint16_t height{1668};
     std::uint16_t fps{120};
     std::uint32_t bitrate{60'000'000};
+    int adapterIndex{-1};
     int displayIndex{-1};
     bool zeroCopy{false};
 };

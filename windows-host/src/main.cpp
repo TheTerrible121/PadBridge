@@ -22,7 +22,8 @@ struct Options {
 void usage() {
     std::cout << "PadBridge host\n"
               << "Usage: padbridge_host [--host IP] [--port 52100] [--fps 120] "
-                 "[--bitrate 60000000] [--display INDEX] [--input-display INDEX] "
+                 "[--bitrate 60000000] [--adapter INDEX] [--display INDEX] "
+                 "[--input-display INDEX] "
                  "[--zero-copy] [--ffmpeg PATH]\n"
               << "Without --display, an NVENC test pattern is sent. Use --zero-copy only "
                  "when the display is attached to the NVIDIA GPU.\n";
@@ -47,6 +48,7 @@ bool parseOptions(const int argc, char** argv, Options& options) {
             else if (arg == "--port") options.port = static_cast<std::uint16_t>(std::stoul(value));
             else if (arg == "--fps") options.encoder.fps = static_cast<std::uint16_t>(std::stoul(value));
             else if (arg == "--bitrate") options.encoder.bitrate = std::stoul(value);
+            else if (arg == "--adapter") options.encoder.adapterIndex = std::stoi(value);
             else if (arg == "--display") options.encoder.displayIndex = std::stoi(value);
             else if (arg == "--input-display") options.inputDisplayIndex = std::stoi(value);
             else if (arg == "--ffmpeg") options.encoder.ffmpegPath = value;
@@ -79,6 +81,9 @@ int main(const int argc, char** argv) {
     std::cout << "Connected. Starting " << options.encoder.width << 'x'
               << options.encoder.height << '@' << options.encoder.fps << " NVENC stream"
               << (options.encoder.displayIndex >= 0 ? " from Windows display" : " test pattern")
+              << (options.encoder.displayIndex >= 0 && options.encoder.adapterIndex >= 0
+                      ? " on DXGI adapter #" + std::to_string(options.encoder.adapterIndex)
+                      : "")
               << (options.encoder.displayIndex >= 0 && options.encoder.zeroCopy
                       ? " (zero-copy).\n" : ".\n");
 
