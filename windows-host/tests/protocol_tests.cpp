@@ -34,6 +34,34 @@ int main() {
     assert(decodedVideo->refreshHz == 120);
     assert(decodedVideo->bitrate == 60'000'000);
 
+    const std::array<std::uint8_t, kPointerEventSize> pointerBytes{
+        0x00, 0x00, 0x00, 0x07,  // id 7
+        0x00,                    // down
+        0x01,                    // Pencil
+        0x00, 0x00,              // buttons
+        0x3e, 0x80, 0x00, 0x00,  // x = 0.25
+        0x3f, 0x40, 0x00, 0x00,  // y = 0.75
+        0x3f, 0x00, 0x00, 0x00,  // pressure = 0.5
+        0x00, 0x00, 0x00, 0x00,  // tilt x = 0
+        0x00, 0x00, 0x00, 0x00,  // tilt y = 0
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    };
+    const auto pointer = decodePointerEvent(pointerBytes);
+    assert(pointer.has_value());
+    assert(pointer->id == 7);
+    assert(pointer->phase == PointerPhase::down);
+    assert(pointer->tool == PointerTool::pencil);
+    assert(pointer->x == 0.25F);
+    assert(pointer->y == 0.75F);
+    assert(pointer->pressure == 0.5F);
+    assert(pointer->timestampNs == 1);
+    auto invalidPointer = pointerBytes;
+    invalidPointer[4] = 4;
+    assert(!decodePointerEvent(invalidPointer).has_value());
+    assert(!decodePointerEvent(std::span<const std::uint8_t>(pointerBytes.data(),
+                                                             pointerBytes.size() - 1))
+                .has_value());
+
     const std::vector<std::uint8_t> stream{
         0, 0, 0, 1, 9, 0xf0, 0, 0, 1, 7, 0x11, 0, 0, 1, 8, 0x22,
         0, 0, 1, 5, 0xaa, 0xbb,
@@ -59,4 +87,3 @@ int main() {
     std::cout << "PadBridge protocol tests passed\n";
     return 0;
 }
-
