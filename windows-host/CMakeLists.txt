@@ -15,12 +15,19 @@ add_executable(padbridge_host
     src/main.cpp
     src/socket_client.cpp
     src/ffmpeg_source.cpp
+    src/input_injector.cpp
 )
 target_link_libraries(padbridge_host PRIVATE padbridge_core)
 
 if(WIN32)
-    target_link_libraries(padbridge_host PRIVATE ws2_32)
-    target_compile_definitions(padbridge_host PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(padbridge_host PRIVATE ws2_32 user32)
+    target_compile_definitions(padbridge_host PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINVER=0x0A00
+        _WIN32_WINNT=0x0A00
+        NTDDI_VERSION=0x0A000006
+    )
 endif()
 
 if(MSVC)
@@ -35,4 +42,3 @@ enable_testing()
 add_executable(protocol_tests tests/protocol_tests.cpp)
 target_link_libraries(protocol_tests PRIVATE padbridge_core)
 add_test(NAME protocol_tests COMMAND protocol_tests)
-
