@@ -29,6 +29,12 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     private var touchIDs: [ObjectIdentifier: UInt32] = [:]
     private var nextTouchID: UInt32 = 1
     private var videoSize = CGSize.zero
+    private var lastFrameArrival = CACurrentMediaTime()
+    private var requestedFrameRate = 120
+
+    private var activeFrameRate: Int {
+        min(120, window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond)
+    }
 
     init(mailbox: FrameMailbox) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -55,7 +61,8 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
         framebufferOnly = true
         isPaused = false
         enableSetNeedsDisplay = false
-        preferredFramesPerSecond = min(120, UIScreen.main.maximumFramesPerSecond)
+        requestedFrameRate = min(120, UIScreen.main.maximumFramesPerSecond)
+        preferredFramesPerSecond = requestedFrameRate
         contentScaleFactor = UIScreen.main.nativeScale
         autoResizeDrawable = true
         isMultipleTouchEnabled = true
@@ -70,6 +77,9 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
             metalLayer.maximumDrawableCount = 2
         }
         CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache)
+        mailbox.setFrameAvailableHandler { [weak self] in
+            DispatchQueue.main.async { self?.frameArrived() }
+        }
     }
 
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -77,12 +87,46 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        autoreleasepool { drawLatestFrame(in: view) }
+        autoreleasepool {
+            updateAdaptiveFrameRate()
+            drawLatestFrame(in: view)
+        }
+    }
+
+    private func frameArrived() {
+        lastFrameArrival = CACurrentMediaTime()
+        if requestedFrameRate != activeFrameRate {
+            setFrameRate(activeFrameRate)
+            // Do not wait for the next idle display-link tick. Metal still
+            // presents this drawable on the next VSync.
+            draw()
+        }
+    }
+
+    private func updateAdaptiveFrameRate() {
+        let idleTime = CACurrentMediaTime() - lastFrameArrival
+        let target: Int
+        if idleTime >= 2.0 {
+            target = min(10, activeFrameRate)
+        } else if idleTime >= 0.35 {
+            target = min(30, activeFrameRate)
+        } else {
+            target = activeFrameRate
+        }
+        setFrameRate(target)
+    }
+
+    private func setFrameRate(_ frameRate: Int) {
+        guard requestedFrameRate != frameRate else { return }
+        requestedFrameRate = frameRate
+        preferredFramesPerSecond = frameRate
     }
 
     private func drawLatestFrame(in view: MTKView) {
         guard let pixelBuffer = mailbox.takeLatest(),
               CVPixelBufferGetPlaneCount(pixelBuffer) == 2 else { return }
+
+        lastFrameArrival = CACurrentMediaTime()
 
         videoSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
                            height: CVPixelBufferGetHeight(pixelBuffer))
