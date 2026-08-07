@@ -28,6 +28,7 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     private var textureCache: CVMetalTextureCache!
     private var touchIDs: [ObjectIdentifier: UInt32] = [:]
     private var nextTouchID: UInt32 = 1
+    private var videoSize = CGSize.zero
 
     init(mailbox: FrameMailbox) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -50,14 +51,24 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
         super.init(frame: .zero, device: device)
 
         colorPixelFormat = .bgra8Unorm
+        clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         framebufferOnly = true
         isPaused = false
         enableSetNeedsDisplay = false
-        preferredFramesPerSecond = 120
+        preferredFramesPerSecond = min(120, UIScreen.main.maximumFramesPerSecond)
+        contentScaleFactor = UIScreen.main.nativeScale
         autoResizeDrawable = true
         isMultipleTouchEnabled = true
+        isOpaque = true
+        backgroundColor = .black
         delegate = self
-   
+        if let metalLayer = layer as? CAMetalLayer {
+            // On iPad, MTKView's display link is the public VSync clock.
+            // Two drawables keeps presentation synchronized without queuing
+            // the default three frames of work.
+            metalLayer.presentsWithTransaction = false
+            metalLayer.maximumDrawableCount = 2
+        }
         CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache)
     }
 
@@ -66,10 +77,21 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
+        autoreleasepool { drawLatestFrame(in: view) }
+    }
+
+    private func drawLatestFrame(in view: MTKView) {
         guard let pixelBuffer = mailbox.takeLatest(),
-              CVPixelBufferGetPlaneCount(pixelBuffer) == 2,
-              let descriptor = currentRenderPassDescriptor,
+              CVPixelBufferGetPlaneCount(pixelBuffer) == 2 else { return }
+
+        videoSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
+                           height: CVPixelBufferGetHeight(pixelBuffer))
+
+        guard let descriptor = currentRenderPassDescriptor,
               let drawable = currentDrawable else { return }
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = clearColor
 
         var lumaReference: CVMetalTexture?
         var chromaReference: CVMetalTexture?
@@ -92,12 +114,37 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
         }
 
         encoder.setRenderPipelineState(pipeline)
+        encoder.setViewport(aspectFitViewport(video: videoSize, drawable: view.drawableSize))
         encoder.setFragmentTexture(luma, index: 0)
         encoder.setFragmentTexture(chroma, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    private func aspectFitViewport(video: CGSize, drawable: CGSize) -> MTLViewport {
+        guard video.width > 0, video.height > 0,
+              drawable.width > 0, drawable.height > 0 else {
+            return MTLViewport(originX: 0, originY: 0, width: drawable.width,
+                               height: drawable.height, znear: 0, zfar: 1)
+        }
+        let scale = min(drawable.width / video.width, drawable.height / video.height)
+        let width = video.width * scale
+        let height = video.height * scale
+        return MTLViewport(originX: (drawable.width - width) * 0.5,
+                           originY: (drawable.height - height) * 0.5,
+                           width: width, height: height, znear: 0, zfar: 1)
+    }
+
+    private func videoRectInView() -> CGRect {
+        guard videoSize.width > 0, videoSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return bounds }
+        let scale = min(bounds.width / videoSize.width, bounds.height / videoSize.height)
+        let size = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+        return CGRect(x: (bounds.width - size.width) * 0.5,
+                      y: (bounds.height - size.height) * 0.5,
+                      width: size.width, height: size.height)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -120,27 +167,33 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
 
     private func emit(_ touches: Set<UITouch>, phase: PointerEvent.Phase, event: UIEvent?) {
         for touch in touches {
+            let videoRect = videoRectInView()
+            if phase == .down && !videoRect.contains(touch.location(in: self)) { continue }
+
+            let key = ObjectIdentifier(touch)
+            let id: UInt32
+            if let existing = touchIDs[key] {
+                id = existing
+            } else {
+                id = nextTouchID
+                nextTouchID &+= 1
+                touchIDs[key] = id
+            }
             let samples = event?.coalescedTouches(for: touch) ?? [touch]
-            for sample in samples { emit(sample, phase: phase) }
+            for sample in samples { emit(sample, id: id, phase: phase, videoRect: videoRect) }
         }
     }
 
-    private func emit(_ touch: UITouch, phase: PointerEvent.Phase) {
-        let key = ObjectIdentifier(touch)
-        let id: UInt32
-        if let existing = touchIDs[key] {
-            id = existing
-        } else {
-            id = nextTouchID
-            nextTouchID &+= 1
-            touchIDs[key] = id
-        }
+    private func emit(_ touch: UITouch, id: UInt32, phase: PointerEvent.Phase,
+                      videoRect: CGRect) {
         let location = touch.location(in: self)
-        let normalizedX = Float(max(0, min(1, location.x / max(bounds.width, 1))))
-        let normalizedY = Float(max(0, min(1, location.y / max(bounds.height, 1))))
-        let pressure = touch.maximumPossibleForce > 0
-            ? Float(max(0, min(1, touch.force / touch.maximumPossibleForce))) : 1
+        let normalizedX = Float(max(0, min(1,
+            (location.x - videoRect.minX) / max(videoRect.width, 1))))
+        let normalizedY = Float(max(0, min(1,
+            (location.y - videoRect.minY) / max(videoRect.height, 1))))
         let isPencil = touch.type == .pencil
+        let pressure = isPencil && touch.maximumPossibleForce > 0
+            ? Float(max(0, min(1, touch.force / touch.maximumPossibleForce))) : 0.5
         let tilt = max(0, (.pi / 2) - touch.altitudeAngle)
         let azimuth = touch.azimuthAngle(in: self)
         onPointer?(PointerEvent(
@@ -150,4 +203,3 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
             timestampNs: UInt64(max(0, touch.timestamp) * 1_000_000_000)))
     }
 }
-
