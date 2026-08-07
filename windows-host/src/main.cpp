@@ -98,13 +98,18 @@ int main(const int argc, char** argv) {
     padbridge::FfmpegSource source(options.encoder);
     const bool completed = source.run([&](std::vector<std::uint8_t>&& accessUnit,
                                            const bool isKeyframe) {
-        nextFrame += interval;
         if (client.isOpen()) {
             client.sendMessage(padbridge::MessageType::videoFrame,
                                isKeyframe ? padbridge::MessageFlags::keyframe : 0,
                                sequence++, padbridge::monotonicNowNs(), accessUnit);
         }
-        std::this_thread::sleep_until(nextFrame);
+        // Lavfi test sources run as fast as possible and need explicit pacing.
+        // Desktop Duplication capture is already paced by ddagrab; sleeping here
+        // would add a second frame interval and effectively halve its frame rate.
+        if (options.encoder.displayIndex < 0) {
+            nextFrame += interval;
+            std::this_thread::sleep_until(nextFrame);
+        }
     });
 
     if (!completed) {

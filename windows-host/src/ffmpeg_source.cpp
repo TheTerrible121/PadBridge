@@ -13,7 +13,8 @@ std::string FfmpegSource::command() const {
         << " -hide_banner -loglevel warning";
     if (settings_.displayIndex >= 0) {
         out << " -f lavfi -i ddagrab=output_idx=" << settings_.displayIndex
-            << ":framerate=" << settings_.fps << ":draw_mouse=1";
+            << ":framerate=" << settings_.fps
+            << ":draw_mouse=1,hwdownload,format=bgra";
     } else {
         out << " -f lavfi -i testsrc2=size=" << settings_.width << 'x' << settings_.height
             << ":rate=" << settings_.fps << " -pix_fmt nv12";
