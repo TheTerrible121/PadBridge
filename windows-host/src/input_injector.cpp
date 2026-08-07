@@ -1,4 +1,5 @@
 #include "input_injector.hpp"
+#include "pointer_sequence.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,7 @@ struct InputInjector::Impl {
     struct TouchState {
         POINT point{};
         std::uint32_t pressure{512};
+        std::uint32_t pointerId{0};
     };
 
     RECT target{};
@@ -33,6 +35,7 @@ struct InputInjector::Impl {
 #endif
     bool isAvailable{false};
     std::string statusText;
+    std::string lastErrorText;
 };
 
 #ifdef _WIN32
@@ -74,8 +77,7 @@ std::uint32_t normalizedPressure(const float pressure, const std::uint32_t fallb
         std::lround(std::clamp(pressure, 0.0F, 1.0F) * 1024.0F));
 }
 
-POINTER_FLAGS activeFlags(const PointerPhase phase, const bool primary,
-                          const bool pen) {
+POINTER_FLAGS activeFlags(const PointerPhase phase, const bool primary) {
     POINTER_FLAGS flags = POINTER_FLAG_NONE;
     switch (phase) {
         case PointerPhase::down:
@@ -92,25 +94,57 @@ POINTER_FLAGS activeFlags(const PointerPhase phase, const bool primary,
             break;
     }
     if (primary) flags |= POINTER_FLAG_PRIMARY;
-    if (pen && (phase == PointerPhase::down || phase == PointerPhase::move)) {
-        flags |= POINTER_FLAG_FIRSTBUTTON;
-    }
     return flags;
 }
 
-bool injectTouchFrame(std::vector<POINTER_TOUCH_INFO>& contacts) {
+std::string inputErrorText(const DWORD error) {
+    switch (error) {
+        case ERROR_ACCESS_DENIED:
+            return "access denied (Win32 error 5)";
+        case ERROR_INVALID_PARAMETER:
+            return "invalid pointer sequence (Win32 error 87)";
+        case ERROR_NOT_READY:
+            return "input timing not ready (Win32 error 21)";
+        default:
+            return "Win32 error " + std::to_string(error);
+    }
+}
+
+std::optional<std::uint32_t> allocateTouchPointerId(const InputInjector::Impl& impl) {
+    for (std::uint32_t candidate = 1; candidate <= kMaximumTouches; ++candidate) {
+        const bool used = std::any_of(impl.touches.begin(), impl.touches.end(),
+                                      [candidate](const auto& item) {
+                                          return item.second.pointerId == candidate;
+                                      });
+        if (!used) return candidate;
+    }
+    return std::nullopt;
+}
+
+bool injectTouchFrame(std::vector<POINTER_TOUCH_INFO>& contacts, DWORD& error) {
     for (int retry = 0; retry < 4; ++retry) {
-        if (InjectTouchInput(static_cast<UINT32>(contacts.size()), contacts.data())) return true;
-        if (GetLastError() != ERROR_NOT_READY) return false;
+        SetLastError(ERROR_SUCCESS);
+        if (InjectTouchInput(static_cast<UINT32>(contacts.size()), contacts.data())) {
+            error = ERROR_SUCCESS;
+            return true;
+        }
+        error = GetLastError();
+        if (error != ERROR_NOT_READY) return false;
         Sleep(1);
     }
     return false;
 }
 
-bool injectPenFrame(HSYNTHETICPOINTERDEVICE device, POINTER_TYPE_INFO& info) {
+bool injectPenFrame(HSYNTHETICPOINTERDEVICE device, POINTER_TYPE_INFO& info,
+                    DWORD& error) {
     for (int retry = 0; retry < 4; ++retry) {
-        if (InjectSyntheticPointerInput(device, &info, 1)) return true;
-        if (GetLastError() != ERROR_NOT_READY) return false;
+        SetLastError(ERROR_SUCCESS);
+        if (InjectSyntheticPointerInput(device, &info, 1)) {
+            error = ERROR_SUCCESS;
+            return true;
+        }
+        error = GetLastError();
+        if (error != ERROR_NOT_READY) return false;
         Sleep(1);
     }
     return false;
@@ -120,17 +154,34 @@ bool injectTouch(InputInjector::Impl& impl, const PointerEvent& event) {
     if (!impl.touchReady) return false;
 
     const bool existed = impl.touches.contains(event.id);
+    const auto normalizedPhase = normalizePointerPhase(existed, event.phase);
+    if (!normalizedPhase.has_value()) {
+        // A move/up without a preceding down can arrive after cancellation or
+        // reconnect. It is stale input, not an injection failure.
+        return true;
+    }
+    const auto previous = existed
+        ? std::optional<InputInjector::Impl::TouchState>(impl.touches.at(event.id))
+        : std::nullopt;
+    const auto effectivePhase = *normalizedPhase;
     if (event.phase == PointerPhase::down) {
         if (!existed && impl.touches.size() >= kMaximumTouches) return false;
-        impl.touches[event.id] = {mapPoint(event, impl.target),
-                                  normalizedPressure(event.pressure, 512)};
-        if (!impl.primaryTouch.has_value()) impl.primaryTouch = event.id;
-    } else if (!existed) {
-        // A move/up without a preceding down can arrive after a reconnect. Ignore it.
-        return false;
+        if (!existed) {
+            const auto pointerId = allocateTouchPointerId(impl);
+            if (!pointerId.has_value()) return false;
+            impl.touches[event.id] = {mapPoint(event, impl.target),
+                                      normalizedPressure(event.pressure, 512),
+                                      *pointerId};
+            if (!impl.primaryTouch.has_value()) impl.primaryTouch = event.id;
+        } else {
+            // A coalesced/retried DOWN for an active pointer is an UPDATE, not
+            // a second pointer transition.
+            impl.touches[event.id].point = mapPoint(event, impl.target);
+            impl.touches[event.id].pressure = normalizedPressure(event.pressure, 512);
+        }
     } else if (event.phase == PointerPhase::move) {
-        impl.touches[event.id] = {mapPoint(event, impl.target),
-                                  normalizedPressure(event.pressure, 512)};
+        impl.touches[event.id].point = mapPoint(event, impl.target);
+        impl.touches[event.id].pressure = normalizedPressure(event.pressure, 512);
     }
 
     std::vector<POINTER_TOUCH_INFO> contacts;
@@ -138,11 +189,11 @@ bool injectTouch(InputInjector::Impl& impl, const PointerEvent& event) {
     for (const auto& [id, state] : impl.touches) {
         POINTER_TOUCH_INFO contact{};
         contact.pointerInfo.pointerType = PT_TOUCH;
-        contact.pointerInfo.pointerId = id;
+        contact.pointerInfo.pointerId = state.pointerId;
         contact.pointerInfo.ptPixelLocation = state.point;
-        const auto phase = id == event.id ? event.phase : PointerPhase::move;
+        const auto phase = id == event.id ? effectivePhase : PointerPhase::move;
         contact.pointerInfo.pointerFlags = activeFlags(
-            phase, impl.primaryTouch.has_value() && *impl.primaryTouch == id, false);
+            phase, impl.primaryTouch.has_value() && *impl.primaryTouch == id);
         contact.touchFlags = TOUCH_FLAG_NONE;
         contact.touchMask = TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION |
                             TOUCH_MASK_PRESSURE;
@@ -155,18 +206,26 @@ bool injectTouch(InputInjector::Impl& impl, const PointerEvent& event) {
         contacts.push_back(contact);
     }
 
-    const bool injected = !contacts.empty() && injectTouchFrame(contacts);
+    DWORD error = ERROR_SUCCESS;
+    const bool injected = !contacts.empty() && injectTouchFrame(contacts, error);
     if (!injected) {
         if (!existed && event.phase == PointerPhase::down) {
             impl.touches.erase(event.id);
             if (impl.touches.empty()) impl.primaryTouch.reset();
+        } else if (previous.has_value()) {
+            impl.touches[event.id] = *previous;
         }
+        impl.lastErrorText = inputErrorText(error);
         return false;
     }
+    impl.lastErrorText.clear();
 
     if (event.phase == PointerPhase::up || event.phase == PointerPhase::cancel) {
         impl.touches.erase(event.id);
-        if (impl.touches.empty()) impl.primaryTouch.reset();
+        if (impl.primaryTouch.has_value() && *impl.primaryTouch == event.id) {
+            if (impl.touches.empty()) impl.primaryTouch.reset();
+            else impl.primaryTouch = impl.touches.begin()->first;
+        }
     }
     return true;
 }
@@ -174,12 +233,17 @@ bool injectTouch(InputInjector::Impl& impl, const PointerEvent& event) {
 bool injectPen(InputInjector::Impl& impl, const PointerEvent& event) {
     if (impl.penDevice == nullptr) return false;
 
+    const bool existed = impl.activePen.has_value() &&
+                         *impl.activePen == event.id &&
+                         impl.penLocation.has_value();
+    const auto normalizedPhase = normalizePointerPhase(existed, event.phase);
+    if (!normalizedPhase.has_value()) return true;
+    const auto effectivePhase = *normalizedPhase;
     if (event.phase == PointerPhase::down) {
-        impl.activePen = event.id;
+        if (!existed) {
+            impl.activePen = event.id;
+        }
         impl.penLocation = mapPoint(event, impl.target);
-    } else if (!impl.activePen.has_value() || *impl.activePen != event.id ||
-               !impl.penLocation.has_value()) {
-        return false;
     } else if (event.phase == PointerPhase::move) {
         impl.penLocation = mapPoint(event, impl.target);
     }
@@ -189,7 +253,7 @@ bool injectPen(InputInjector::Impl& impl, const PointerEvent& event) {
     info.penInfo.pointerInfo.pointerType = PT_PEN;
     info.penInfo.pointerInfo.pointerId = 0;
     info.penInfo.pointerInfo.ptPixelLocation = *impl.penLocation;
-    info.penInfo.pointerInfo.pointerFlags = activeFlags(event.phase, true, true);
+    info.penInfo.pointerInfo.pointerFlags = activeFlags(effectivePhase, true);
     info.penInfo.penFlags = PEN_FLAG_NONE;
     info.penInfo.penMask = PEN_MASK_PRESSURE | PEN_MASK_TILT_X | PEN_MASK_TILT_Y;
     info.penInfo.pressure = normalizedPressure(event.pressure, 512);
@@ -199,7 +263,13 @@ bool injectPen(InputInjector::Impl& impl, const PointerEvent& event) {
     info.penInfo.tiltY = static_cast<INT32>(std::lround(
         std::clamp(event.tiltY * radiansToDegrees, -90.0F, 90.0F)));
 
-    const bool injected = injectPenFrame(impl.penDevice, info);
+    DWORD error = ERROR_SUCCESS;
+    const bool injected = injectPenFrame(impl.penDevice, info, error);
+    if (!injected) {
+        impl.lastErrorText = inputErrorText(error);
+        return false;
+    }
+    impl.lastErrorText.clear();
     if (injected && (event.phase == PointerPhase::up ||
                      event.phase == PointerPhase::cancel)) {
         impl.activePen.reset();
@@ -258,6 +328,10 @@ bool InputInjector::available() const noexcept {
 
 const std::string& InputInjector::status() const noexcept {
     return impl_->statusText;
+}
+
+const std::string& InputInjector::lastError() const noexcept {
+    return impl_->lastErrorText;
 }
 
 bool InputInjector::inject(const PointerEvent& event) {

@@ -111,8 +111,10 @@ int main(const int argc, char** argv) {
                         reportedInvalid = true;
                     }
                 } else if (!input.inject(*event) && !reportedFailure) {
-                    std::cerr << "Windows rejected a touch/Pencil event; check the input "
-                                 "monitor index.\n";
+                    std::cerr << "Windows rejected a touch/Pencil event: "
+                              << (input.lastError().empty() ? "unknown input error"
+                                                            : input.lastError())
+                              << ".\n";
                     reportedFailure = true;
                 }
             }

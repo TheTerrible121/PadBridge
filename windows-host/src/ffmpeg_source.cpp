@@ -36,7 +36,11 @@ std::string FfmpegSource::command() const {
         out << " -f lavfi -i testsrc2=size=" << settings_.width << 'x' << settings_.height
             << ":rate=" << settings_.fps << " -pix_fmt nv12";
     }
-    out << " -an -fps_mode passthrough -c:v h264_nvenc -preset p1 -tune ull"
+    // VFR preserves ddagrab's idle-frame suppression while dropping frames that
+    // land on the same timestamp. Using the filtergraph time base prevents the
+    // raw H.264 muxer from receiving duplicate DTS values at 120 Hz.
+    out << " -an -fps_mode vfr -enc_time_base filter"
+        << " -c:v h264_nvenc -preset p1 -tune ull"
         << " -rc cbr -b:v " << bitrateK << "k -maxrate " << bitrateK << "k"
         << " -bufsize " << (bitrateK / 30U) << "k"
         << " -g " << settings_.fps << " -bf 0 -zerolatency 1 -forced-idr 1"

@@ -2,6 +2,7 @@
 
 #include "protocol.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -21,6 +22,7 @@ public:
 
     [[nodiscard]] bool available() const noexcept;
     [[nodiscard]] const std::string& status() const noexcept;
+    [[nodiscard]] const std::string& lastError() const noexcept;
     bool inject(const PointerEvent& event);
 
 private:
