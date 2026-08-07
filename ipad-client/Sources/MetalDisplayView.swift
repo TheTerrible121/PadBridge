@@ -57,10 +57,7 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
         autoResizeDrawable = true
         isMultipleTouchEnabled = true
         delegate = self
-        if #available(iOS 15.0, *) {
-            layer.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120,
-                                                             preferred: 120)
-        }
+   
         CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache)
     }
 
