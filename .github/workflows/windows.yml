@@ -1,0 +1,29 @@
+name: Build Windows host
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "windows-host/**"
+      - ".github/workflows/windows.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S windows-host -B windows-host/build -A x64
+
+      - name: Build
+        run: cmake --build windows-host/build --config Release
+
+      - name: Test
+        run: ctest --test-dir windows-host/build -C Release --output-on-failure
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PadBridge-Windows-host
+          path: windows-host/build/Release/padbridge_host.exe
+          if-no-files-found: error
