@@ -15,6 +15,7 @@ struct EncoderSettings {
     std::uint16_t fps{120};
     std::uint32_t bitrate{60'000'000};
     int displayIndex{-1};
+    bool zeroCopy{false};
 };
 
 class FfmpegSource {

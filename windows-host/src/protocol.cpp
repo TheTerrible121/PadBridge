@@ -1,7 +1,9 @@
 #include "protocol.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
+#include <cmath>
 
 namespace padbridge {
 namespace {
@@ -44,6 +46,10 @@ std::uint64_t get64(const std::uint8_t* in) {
         value = (value << 8U) | static_cast<std::uint64_t>(in[index]);
     }
     return value;
+}
+
+float getFloat(const std::uint8_t* in) {
+    return std::bit_cast<float>(get32(in));
 }
 
 }  // namespace
@@ -106,10 +112,32 @@ std::optional<VideoConfig> decodeVideoConfig(const std::span<const std::uint8_t>
     return config;
 }
 
+std::optional<PointerEvent> decodePointerEvent(const std::span<const std::uint8_t> bytes) {
+    if (bytes.size() != kPointerEventSize || bytes[4] > 3U || bytes[5] > 1U) {
+        return std::nullopt;
+    }
+    PointerEvent event{};
+    event.id = get32(bytes.data());
+    event.phase = static_cast<PointerPhase>(bytes[4]);
+    event.tool = static_cast<PointerTool>(bytes[5]);
+    event.buttons = get16(bytes.data() + 6);
+    event.x = getFloat(bytes.data() + 8);
+    event.y = getFloat(bytes.data() + 12);
+    event.pressure = getFloat(bytes.data() + 16);
+    event.tiltX = getFloat(bytes.data() + 20);
+    event.tiltY = getFloat(bytes.data() + 24);
+    event.timestampNs = get64(bytes.data() + 28);
+    if (!std::isfinite(event.x) || !std::isfinite(event.y) ||
+        !std::isfinite(event.pressure) || !std::isfinite(event.tiltX) ||
+        !std::isfinite(event.tiltY)) {
+        return std::nullopt;
+    }
+    return event;
+}
+
 std::uint64_t monotonicNowNs() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 }  // namespace padbridge
-

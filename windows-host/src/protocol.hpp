@@ -11,6 +11,7 @@ namespace padbridge {
 
 constexpr std::size_t kHeaderSize = 24;
 constexpr std::size_t kVideoConfigSize = 16;
+constexpr std::size_t kPointerEventSize = 36;
 constexpr std::uint32_t kMaxPayloadSize = 16U * 1024U * 1024U;
 constexpr std::uint8_t kProtocolVersion = 1;
 
@@ -49,11 +50,36 @@ struct VideoConfig {
     std::uint32_t bitrate{60'000'000};
 };
 
+enum class PointerPhase : std::uint8_t {
+    down = 0,
+    move = 1,
+    up = 2,
+    cancel = 3,
+};
+
+enum class PointerTool : std::uint8_t {
+    finger = 0,
+    pencil = 1,
+};
+
+struct PointerEvent {
+    std::uint32_t id{0};
+    PointerPhase phase{PointerPhase::move};
+    PointerTool tool{PointerTool::finger};
+    std::uint16_t buttons{0};
+    float x{0};
+    float y{0};
+    float pressure{0};
+    float tiltX{0};
+    float tiltY{0};
+    std::uint64_t timestampNs{0};
+};
+
 std::array<std::uint8_t, kHeaderSize> encodeHeader(const Header& header);
 std::optional<Header> decodeHeader(std::span<const std::uint8_t> bytes);
 std::array<std::uint8_t, kVideoConfigSize> encodeVideoConfig(const VideoConfig& config);
 std::optional<VideoConfig> decodeVideoConfig(std::span<const std::uint8_t> bytes);
+std::optional<PointerEvent> decodePointerEvent(std::span<const std::uint8_t> bytes);
 std::uint64_t monotonicNowNs();
 
 }  // namespace padbridge
-
