@@ -218,12 +218,22 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
             let id: UInt32
             if let existing = touchIDs[key] {
                 id = existing
-            } else {
+            } else if phase == .down {
                 id = nextTouchID
                 nextTouchID &+= 1
                 touchIDs[key] = id
+            } else {
+                // UIKit can deliver a late move/end after cancellation or a
+                // reconnect. Never manufacture a Windows pointer without DOWN.
+                continue
             }
-            let samples = event?.coalescedTouches(for: touch) ?? [touch]
+
+            // Coalesced history is useful only for motion. Replaying it for a
+            // began/ended callback produces duplicate DOWN/UP packets, which
+            // Windows correctly rejects as an invalid pointer sequence.
+            let samples = phase == .move
+                ? (event?.coalescedTouches(for: touch) ?? [touch])
+                : [touch]
             for sample in samples { emit(sample, id: id, phase: phase, videoRect: videoRect) }
         }
     }
