@@ -30,6 +30,7 @@ public sealed class PadBridgeSession : IAsyncDisposable
     private WindowRouter? _windowRouter;
     private Process? _host;
     private AppSettings? _activeSettings;
+    private ConnectionEndpoint? _discoveredEndpoint;
     private CancellationTokenSource? _disconnectGrace;
     private bool _hasStreamed;
     private SessionSnapshot _snapshot = new(SessionPhase.Idle, "Ready", "Connect your iPad");
@@ -41,6 +42,37 @@ public sealed class PadBridgeSession : IAsyncDisposable
     public SessionSnapshot Snapshot => _snapshot;
     public bool IsActive => _snapshot.Phase is SessionPhase.Starting or SessionPhase.Waiting
                                            or SessionPhase.Streaming;
+
+    /// <summary>
+    /// Lightweight tray-mode discovery. No virtual monitor, host, FFmpeg, or
+    /// encoder is started until the foreground iPad receiver is available.
+    /// </summary>
+    public async Task<bool> ReceiverAvailableAsync(
+        AppSettings settings, CancellationToken cancellationToken)
+    {
+        if (IsActive) return true;
+
+        if (settings.ConnectionMode is ConnectionMode.Auto or ConnectionMode.Usb)
+        {
+            await using var probe = new UsbMuxForwarder(0, 52100, _ => { });
+            if (await probe.IsDevicePortOpenAsync(cancellationToken)) return true;
+        }
+
+        if (settings.ConnectionMode is ConnectionMode.Auto or ConnectionMode.Wifi)
+        {
+            var discovered = await _discovery.DiscoverAsync(
+                TimeSpan.FromMilliseconds(900), _ => { }, cancellationToken);
+            if (discovered is not null)
+            {
+                Interlocked.Exchange(ref _discoveredEndpoint,
+                    new ConnectionEndpoint(discovered.Address.ToString(), discovered.Port,
+                        "Wi-Fi", settings.WifiBitrateMbps));
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public async Task StartAsync(AppSettings settings)
     {
@@ -120,6 +152,13 @@ public sealed class PadBridgeSession : IAsyncDisposable
     private async Task<ConnectionEndpoint> ResolveEndpointAsync(
         AppSettings settings, CancellationToken cancellationToken)
     {
+        var discovered = Interlocked.Exchange(ref _discoveredEndpoint, null);
+        if (discovered is not null)
+        {
+            Log($"Found active iPad at {discovered.Host}:{discovered.Port}.");
+            return discovered;
+        }
+
         if (settings.ConnectionMode is ConnectionMode.Auto or ConnectionMode.Usb)
         {
             var forwarder = new UsbMuxForwarder(52100, 52100, Log);

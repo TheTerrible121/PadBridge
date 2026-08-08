@@ -20,8 +20,23 @@ public sealed class SettingsStore
         try
         {
             if (!File.Exists(_path)) return new AppSettings();
-            return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_path), JsonOptions)
-                   ?? new AppSettings();
+            var json = File.ReadAllText(_path);
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions)
+                           ?? new AppSettings();
+            using var document = JsonDocument.Parse(json);
+            var current = document.RootElement.TryGetProperty(
+                              nameof(AppSettings.SettingsVersion), out var version) &&
+                          version.TryGetInt32(out var number) && number >= 2;
+            if (!current)
+            {
+                // Version 2 introduces seamless tray startup. Migrate existing
+                // 1.0 installs once without overriding later user choices.
+                settings.SettingsVersion = 2;
+                settings.AutoConnect = true;
+                settings.StartWithWindows = true;
+                Save(settings);
+            }
+            return settings;
         }
         catch
         {

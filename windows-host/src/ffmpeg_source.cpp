@@ -176,8 +176,8 @@ bool FfmpegSource::run(const AnnexBAccessUnitParser::Callback& callback,
     RECT targetMonitor{};
     const bool adaptive = findTargetMonitor(settings_.width, settings_.height,
                                              targetMonitor);
-    const auto warmupUntil = std::chrono::steady_clock::now() +
-                             std::chrono::seconds(2);
+    auto fullRateUntil = std::chrono::steady_clock::now() +
+                         std::chrono::seconds(2);
     std::cout << (adaptive
         ? "Adaptive capture active: 120 Hz on the iPad, near-zero work off-screen.\n"
         : "Adaptive target not found; maintaining the requested frame rate.\n");
@@ -189,9 +189,16 @@ bool FfmpegSource::run(const AnnexBAccessUnitParser::Callback& callback,
             break;
         }
 
-        const bool fullRate = !adaptive ||
-            std::chrono::steady_clock::now() < warmupUntil ||
-            targetDisplayIsActive(targetMonitor);
+        const auto now = std::chrono::steady_clock::now();
+        if (adaptive && targetDisplayIsActive(targetMonitor)) {
+            // Keep the full-rate clock alive briefly after the cursor crosses
+            // back to Windows. This prevents a rapid edge crossing from
+            // oscillating between 1 and 120 Hz or feeling like a stutter.
+            // The iPad display link holds the last active cadence for another
+            // 0.5 s, producing a two-second end-to-end grace period.
+            fullRateUntil = now + std::chrono::milliseconds(1500);
+        }
+        const bool fullRate = !adaptive || now < fullRateUntil;
         if (!fullRate) {
             // Stop draining stdout. The small pipe fills in milliseconds and
             // naturally blocks the FFmpeg capture/encode pipeline, eliminating

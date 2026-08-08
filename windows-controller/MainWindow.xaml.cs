@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -17,6 +19,7 @@ public partial class MainWindow : Window
     private readonly SettingsStore _settingsStore = new();
     private readonly PadBridgeSession _session = new();
     private readonly StringBuilder _log = new();
+    private readonly CancellationTokenSource _applicationLifetime = new();
     private readonly bool _backgroundLaunch;
     private AppSettings _settings;
     private Forms.NotifyIcon? _trayIcon;
@@ -24,6 +27,8 @@ public partial class MainWindow : Window
     private bool _allowClose;
     private bool _busy;
     private bool _exiting;
+    private bool _manualAutoConnectPause;
+    private Task? _autoConnectTask;
 
     public MainWindow(bool backgroundLaunch)
     {
@@ -33,16 +38,20 @@ public partial class MainWindow : Window
         ApplySettingsToControls();
         _session.StateChanged += snapshot => Dispatcher.InvokeAsync(() => ApplyState(snapshot));
         _session.LogReceived += line => Dispatcher.InvokeAsync(() => AppendLog(line));
-        _session.RemoteSessionEnded += () => Dispatcher.InvokeAsync(ExitApplication);
+        _session.RemoteSessionEnded += () => Dispatcher.InvokeAsync(() =>
+        {
+            _manualAutoConnectPause = false;
+            ApplyState(_session.Snapshot);
+        });
         CreateTrayIcon();
         Loaded += MainWindow_Loaded;
     }
 
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         ApplyState(_session.Snapshot);
-        if (_settings.AutoConnect)
-            await StartSessionAsync();
+        StartupService.SetEnabled(_settings.StartWithWindows);
+        _autoConnectTask = AutoConnectLoopAsync(_applicationLifetime.Token);
         if (_backgroundLaunch) Hide();
     }
 
@@ -50,9 +59,44 @@ public partial class MainWindow : Window
     {
         if (_busy) return;
         if (_session.IsActive)
+        {
+            _manualAutoConnectPause = true;
             await StopSessionAsync();
+        }
         else
+        {
+            _manualAutoConnectPause = false;
             await StartSessionAsync();
+        }
+    }
+
+    private async Task AutoConnectLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (_settings.AutoConnect && !_manualAutoConnectPause &&
+                    !_session.IsActive && !_busy &&
+                    await _session.ReceiverAvailableAsync(_settings, cancellationToken))
+                {
+                    await StartSessionAsync();
+                }
+
+                await Task.Delay(_session.IsActive
+                    ? TimeSpan.FromSeconds(1)
+                    : TimeSpan.FromMilliseconds(600), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception exception)
+            {
+                AppendLog($"Automatic discovery: {exception.Message}");
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+        }
     }
 
     private async Task StartSessionAsync()
@@ -195,8 +239,16 @@ public partial class MainWindow : Window
         _trayConnectionItem = new Forms.ToolStripMenuItem("Connect");
         _trayConnectionItem.Click += async (_, _) =>
         {
-            if (_session.IsActive) await Dispatcher.InvokeAsync(StopSessionAsync).Task.Unwrap();
-            else await Dispatcher.InvokeAsync(StartSessionAsync).Task.Unwrap();
+            if (_session.IsActive)
+            {
+                _manualAutoConnectPause = true;
+                await Dispatcher.InvokeAsync(StopSessionAsync).Task.Unwrap();
+            }
+            else
+            {
+                _manualAutoConnectPause = false;
+                await Dispatcher.InvokeAsync(StartSessionAsync).Task.Unwrap();
+            }
         };
         var exit = new Forms.ToolStripMenuItem("Exit");
         exit.Click += async (_, _) => await Dispatcher.InvokeAsync(ExitApplication).Task.Unwrap();
@@ -233,9 +285,16 @@ public partial class MainWindow : Window
         if (_exiting) return;
         _exiting = true;
         _allowClose = true;
+        _applicationLifetime.Cancel();
+        if (_autoConnectTask is not null)
+        {
+            try { await _autoConnectTask; }
+            catch (OperationCanceledException) { }
+        }
         await _session.DisposeAsync();
         _trayIcon?.Dispose();
         _trayIcon = null;
+        _applicationLifetime.Dispose();
         Close();
         System.Windows.Application.Current.Shutdown();
     }
@@ -244,7 +303,15 @@ public partial class MainWindow : Window
     {
         if (_allowClose) return;
         e.Cancel = true;
-        _ = ExitApplication();
+        HideToTray();
+    }
+
+    private void HideToTray()
+    {
+        Hide();
+        _trayIcon?.ShowBalloonTip(1800, "PadBridge is ready",
+            "It will connect automatically when you open PadBridge on the iPad.",
+            Forms.ToolTipIcon.Info);
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -255,6 +322,5 @@ public partial class MainWindow : Window
     private void MinimizeButton_Click(object sender, RoutedEventArgs e) =>
         WindowState = WindowState.Minimized;
 
-    private async void CloseButton_Click(object sender, RoutedEventArgs e) =>
-        await ExitApplication();
+    private void CloseButton_Click(object sender, RoutedEventArgs e) => HideToTray();
 }

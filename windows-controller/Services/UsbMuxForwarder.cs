@@ -70,6 +70,34 @@ public sealed class UsbMuxForwarder : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Checks whether the foreground PadBridge iPad app is accepting its USB
+    /// port. The successful probe is immediately closed; the real host takes
+    /// over the connection when the session starts.
+    /// </summary>
+    public async Task<bool> IsDevicePortOpenAsync(CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(1200));
+        try
+        {
+            var device = await FindUsbDeviceAsync(timeout.Token);
+            if (device is null) return false;
+
+            using var upstream = new TcpClient(AddressFamily.InterNetwork) { NoDelay = true };
+            await upstream.ConnectAsync(IPAddress.Loopback, AppleMuxPort, timeout.Token);
+            var networkOrderPort = BinaryPrimitives.ReverseEndianness((ushort)_devicePort);
+            var response = await SendPlistRequestAsync(upstream.GetStream(), BuildConnectPlist(
+                device.DeviceId, networkOrderPort), timeout.Token);
+            return ReadResultNumber(response) == 0;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException ||
+                                          !cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _lifetime.Cancel();

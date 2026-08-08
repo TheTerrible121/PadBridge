@@ -9,6 +9,7 @@ public enum ConnectionMode
 
 public sealed class AppSettings
 {
+    public int SettingsVersion { get; set; } = 2;
     public ConnectionMode ConnectionMode { get; set; } = ConnectionMode.Auto;
     public string WifiAddress { get; set; } = "";
     public int FramesPerSecond { get; set; } = 120;
@@ -20,5 +21,5 @@ public sealed class AppSettings
     public bool RouteNewWindows { get; set; } = true;
     public bool CollapseDisplayOnStop { get; set; } = true;
     public bool AutoConnect { get; set; } = true;
-    public bool StartWithWindows { get; set; }
+    public bool StartWithWindows { get; set; } = true;
 }

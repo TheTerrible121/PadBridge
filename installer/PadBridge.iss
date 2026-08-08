@@ -38,5 +38,8 @@ Name: "{userdesktop}\PadBridge"; Filename: "{app}\PadBridge.exe"; Tasks: desktop
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "PadBridge"; ValueData: """{app}\PadBridge.exe"" --background"; Flags: uninsdeletevalue
+
 [Run]
 Filename: "{app}\PadBridge.exe"; Description: "Launch PadBridge"; Flags: nowait postinstall skipifsilent
