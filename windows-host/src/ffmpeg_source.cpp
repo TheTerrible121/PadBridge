@@ -15,24 +15,79 @@
 
 namespace padbridge {
 
+#ifdef _WIN32
+namespace {
+
+struct MonitorSearch {
+    LONG width{};
+    LONG height{};
+    RECT target{};
+    bool found{false};
+};
+
+BOOL CALLBACK findMatchingMonitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
+    auto& search = *reinterpret_cast<MonitorSearch*>(data);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfoW(monitor, &info)) return TRUE;
+    const LONG width = info.rcMonitor.right - info.rcMonitor.left;
+    const LONG height = info.rcMonitor.bottom - info.rcMonitor.top;
+    if (width != search.width || height != search.height) return TRUE;
+
+    search.target = info.rcMonitor;
+    search.found = true;
+    // Prefer the non-primary display when two monitors share a resolution.
+    return (info.dwFlags & MONITORINFOF_PRIMARY) != 0 ? TRUE : FALSE;
+}
+
+bool findTargetMonitor(const std::uint16_t width, const std::uint16_t height,
+                       RECT& target) {
+    MonitorSearch search{static_cast<LONG>(width), static_cast<LONG>(height)};
+    EnumDisplayMonitors(nullptr, nullptr, findMatchingMonitor,
+                        reinterpret_cast<LPARAM>(&search));
+    if (search.found) target = search.target;
+    return search.found;
+}
+
+bool foregroundWindowIsOn(const RECT& target) {
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr) return false;
+    const HMONITOR monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL);
+    if (monitor == nullptr) return false;
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    return GetMonitorInfoW(monitor, &info) && EqualRect(&target, &info.rcMonitor);
+}
+
+bool targetDisplayIsActive(const RECT& target) {
+    POINT cursor{};
+    if (GetCursorPos(&cursor) && PtInRect(&target, cursor)) return true;
+
+    // Synthetic touch/Pencil does not always move the Windows cursor. Recent
+    // input counts as active when the foreground app is on the iPad display.
+    LASTINPUTINFO input{};
+    input.cbSize = sizeof(input);
+    return GetLastInputInfo(&input) &&
+           GetTickCount() - input.dwTime <= 750U &&
+           foregroundWindowIsOn(target);
+}
+
+}  // namespace
+#endif
+
 std::string FfmpegSource::command() const {
     const auto bitrateK = settings_.bitrate / 1000U;
     std::ostringstream out;
     out << '"' << settings_.ffmpegPath << '"'
         << " -hide_banner -loglevel warning";
     if (settings_.displayIndex >= 0) {
-        // Desktop Duplication can report cursor-only updates faster than the
-        // monitor refresh rate. Keep sparse/idle capture, but discard updates
-        // closer together than one requested frame interval before encoding.
-        // The select filter only examines timestamps, so D3D11 frames remain
-        // on the GPU in the zero-copy path.
+        // A true 120 Hz clock is required for consistently smooth cursor and
+        // window motion. The Windows pipe reader applies adaptive backpressure
+        // below whenever the cursor is away from the iPad display.
         std::ostringstream captureGraph;
         captureGraph << "ddagrab=output_idx=" << settings_.displayIndex
                      << ":framerate=" << settings_.fps
-                     << ":draw_mouse=1:dup_frames=0"
-                     << ",select='isnan(prev_selected_t)+gt(floor(t*"
-                     << settings_.fps << "+0.001),floor(prev_selected_t*"
-                     << settings_.fps << "+0.001))'";
+                     << ":draw_mouse=1:dup_frames=1";
         if (!settings_.zeroCopy) {
             captureGraph << ",hwdownload,format=bgra";
         }
@@ -74,7 +129,7 @@ bool FfmpegSource::run(const AnnexBAccessUnitParser::Callback& callback,
 
     HANDLE readPipe = nullptr;
     HANDLE writePipe = nullptr;
-    if (!CreatePipe(&readPipe, &writePipe, &security, 256U * 1024U) ||
+    if (!CreatePipe(&readPipe, &writePipe, &security, 64U * 1024U) ||
         !SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0)) {
         if (readPipe != nullptr) CloseHandle(readPipe);
         if (writePipe != nullptr) CloseHandle(writePipe);
@@ -118,12 +173,31 @@ bool FfmpegSource::run(const AnnexBAccessUnitParser::Callback& callback,
     std::array<std::uint8_t, 16U * 1024U> chunk{};
     bool interrupted = false;
     bool readFailed = false;
+    RECT targetMonitor{};
+    const bool adaptive = findTargetMonitor(settings_.width, settings_.height,
+                                             targetMonitor);
+    const auto warmupUntil = std::chrono::steady_clock::now() +
+                             std::chrono::seconds(2);
+    std::cout << (adaptive
+        ? "Adaptive capture active: 120 Hz on the iPad, near-zero work off-screen.\n"
+        : "Adaptive target not found; maintaining the requested frame rate.\n");
 
     for (;;) {
         if (!shouldContinue()) {
             interrupted = true;
             TerminateProcess(process.hProcess, 0);
             break;
+        }
+
+        const bool fullRate = !adaptive ||
+            std::chrono::steady_clock::now() < warmupUntil ||
+            targetDisplayIsActive(targetMonitor);
+        if (!fullRate) {
+            // Stop draining stdout. The small pipe fills in milliseconds and
+            // naturally blocks the FFmpeg capture/encode pipeline, eliminating
+            // continuous NVENC, USB, and iPad decoder work while off-screen.
+            if (WaitForSingleObject(process.hProcess, 5) == WAIT_OBJECT_0) break;
+            continue;
         }
 
         DWORD available = 0;
