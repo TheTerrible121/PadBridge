@@ -1,8 +1,8 @@
 # PadBridge wire protocol v1
 
 PadBridge transports independently decodable, low-latency media messages. All
-integer fields are unsigned and big-endian. TCP is used for the first USB
-checkpoint; the same message bodies can later ride over a datagram transport.
+integer fields are unsigned and big-endian. TCP is used for native USB and the
+current local Wi-Fi transport.
 
 ## Header (24 bytes)
 
@@ -27,13 +27,18 @@ magic, version, or oversized payload instead of attempting to resynchronize.
 | 2 | video config | host to iPad | structure below |
 | 3 | video frame | host to iPad | one H.264 Annex-B access unit |
 | 4 | pointer | iPad to host | structure below |
-| 5 | audio config | host to iPad | reserved for checkpoint 2 |
-| 6 | audio frame | host to iPad | reserved for checkpoint 2 |
+| 5 | audio config | host to iPad | reserved |
+| 6 | audio frame | host to iPad | reserved |
 | 7 | ping | either | empty |
 | 8 | pong | either | empty |
 | 9 | stats | either | reserved |
 
 Header flag bit 0 marks a keyframe and bit 1 marks a discontinuity.
+
+Both peers send a UTF-8 `hello` implementation string immediately after the
+TCP transport opens. The Windows host does not start capture or NVENC until the
+iPad hello arrives; this distinguishes a real app connection from a local USB
+forwarder that is still waiting for the iPad listener.
 
 ## Video config (16 bytes)
 
@@ -65,4 +70,3 @@ submitting them to VideoToolbox.
 | 20 | 4 | X tilt in radians, IEEE-754 float |
 | 24 | 4 | Y tilt in radians, IEEE-754 float |
 | 28 | 8 | event timestamp in nanoseconds |
-

@@ -90,6 +90,9 @@ bool TcpClient::sendMessage(const MessageType type, const std::uint16_t flags,
     const Header header{kProtocolVersion, type, flags,
                         static_cast<std::uint32_t>(payload.size()), sequence, timestampNs};
     const auto encoded = encodeHeader(header);
+    // A protocol message must stay contiguous if video, ping, audio, or status
+    // producers send from different threads.
+    const std::scoped_lock sendLock(sendMutex_);
     return sendAll(encoded) && sendAll(payload);
 }
 

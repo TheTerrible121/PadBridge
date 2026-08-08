@@ -4,6 +4,7 @@ import Network
 final class NetworkReceiver {
     var onPacket: ((WirePacket) -> Void)?
     var onStatus: ((String) -> Void)?
+    var onConnectionChanged: ((Bool) -> Void)?
 
     private let queue = DispatchQueue(label: "dev.padbridge.network", qos: .userInteractive)
     private let parser = WireParser()
@@ -75,11 +76,18 @@ final class NetworkReceiver {
             switch state {
             case .ready:
                 self?.onStatus?("Windows connected")
-                if let newConnection { self?.receive(on: newConnection) }
+                self?.onConnectionChanged?(true)
+                if let self, let newConnection {
+                    self.send(type: .hello, payload: Data("PadBridge iPad/1.0".utf8),
+                              timestampNs: DispatchTime.now().uptimeNanoseconds)
+                    self.receive(on: newConnection)
+                }
             case .failed(let error):
                 self?.onStatus?("Connection failed: \(error.localizedDescription)")
+                self?.onConnectionChanged?(false)
             case .cancelled:
                 self?.onStatus?("Disconnected — waiting")
+                self?.onConnectionChanged?(false)
             default: break
             }
         }
@@ -110,4 +118,3 @@ final class NetworkReceiver {
         }
     }
 }
-

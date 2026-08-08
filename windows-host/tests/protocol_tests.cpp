@@ -1,4 +1,5 @@
 #include "annex_b_reader.hpp"
+#include "pointer_sequence.hpp"
 #include "protocol.hpp"
 
 #include <array>
@@ -61,6 +62,15 @@ int main() {
     assert(!decodePointerEvent(std::span<const std::uint8_t>(pointerBytes.data(),
                                                              pointerBytes.size() - 1))
                 .has_value());
+
+    assert(normalizePointerPhase(false, PointerPhase::down) == PointerPhase::down);
+    assert(normalizePointerPhase(true, PointerPhase::down) == PointerPhase::move);
+    assert(normalizePointerPhase(true, PointerPhase::move) == PointerPhase::move);
+    assert(normalizePointerPhase(true, PointerPhase::up) == PointerPhase::up);
+    assert(normalizePointerPhase(true, PointerPhase::cancel) == PointerPhase::cancel);
+    assert(!normalizePointerPhase(false, PointerPhase::move).has_value());
+    assert(!normalizePointerPhase(false, PointerPhase::up).has_value());
+    assert(!normalizePointerPhase(false, PointerPhase::cancel).has_value());
 
     const std::vector<std::uint8_t> stream{
         0, 0, 0, 1, 9, 0xf0, 0, 0, 1, 7, 0x11, 0, 0, 1, 8, 0x22,

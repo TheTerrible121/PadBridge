@@ -3,6 +3,7 @@
 #include "annex_b_reader.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 
@@ -22,7 +23,8 @@ struct EncoderSettings {
 class FfmpegSource {
 public:
     explicit FfmpegSource(EncoderSettings settings) : settings_(std::move(settings)) {}
-    bool run(const AnnexBAccessUnitParser::Callback& callback);
+    bool run(const AnnexBAccessUnitParser::Callback& callback,
+             const std::function<bool()>& shouldContinue = [] { return true; });
 
 private:
     EncoderSettings settings_;

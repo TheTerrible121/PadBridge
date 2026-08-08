@@ -29,11 +29,13 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     private var touchIDs: [ObjectIdentifier: UInt32] = [:]
     private var nextTouchID: UInt32 = 1
     private var videoSize = CGSize.zero
-    private var lastFrameArrival = CACurrentMediaTime()
+    private var lastFrameArrival: CFTimeInterval = 0
+    private var activeUntil: CFTimeInterval = 0
     private var requestedFrameRate = 120
 
     private var activeFrameRate: Int {
-        min(120, window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond)
+        min(mailbox.requestedFramesPerSecond(),
+            window?.screen.maximumFramesPerSecond ?? UIScreen.main.maximumFramesPerSecond)
     }
 
     init(mailbox: FrameMailbox) {
@@ -61,7 +63,9 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
         framebufferOnly = true
         isPaused = false
         enableSetNeedsDisplay = false
-        requestedFrameRate = min(120, UIScreen.main.maximumFramesPerSecond)
+        // Waiting/disconnected uses a 1 Hz presentation clock. The first real
+        // frame is drawn immediately and sustained motion promotes it to 120.
+        requestedFrameRate = 1
         preferredFramesPerSecond = requestedFrameRate
         contentScaleFactor = UIScreen.main.nativeScale
         autoResizeDrawable = true
@@ -94,25 +98,27 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     }
 
     private func frameArrived() {
-        lastFrameArrival = CACurrentMediaTime()
-        if requestedFrameRate != activeFrameRate {
+        let now = CACurrentMediaTime()
+        let gap = lastFrameArrival > 0 ? now - lastFrameArrival : .infinity
+        lastFrameArrival = now
+        let wasThrottled = requestedFrameRate != activeFrameRate
+
+        // One isolated frame is the desktop-idle heartbeat. Two frames close
+        // together mean real motion: immediately return to native 120 Hz and
+        // hold it briefly across tiny capture gaps.
+        if gap < 0.15 {
+            activeUntil = now + 0.5
             setFrameRate(activeFrameRate)
-            // Do not wait for the next idle display-link tick. Metal still
-            // presents this drawable on the next VSync.
+        }
+        if wasThrottled {
+            // Present the first post-idle frame immediately. The drawable is
+            // still synchronized to the iPad's next VSync.
             draw()
         }
     }
 
     private func updateAdaptiveFrameRate() {
-        let idleTime = CACurrentMediaTime() - lastFrameArrival
-        let target: Int
-        if idleTime >= 2.0 {
-            target = min(10, activeFrameRate)
-        } else if idleTime >= 0.35 {
-            target = min(30, activeFrameRate)
-        } else {
-            target = activeFrameRate
-        }
+        let target = CACurrentMediaTime() < activeUntil ? activeFrameRate : 1
         setFrameRate(target)
     }
 
@@ -125,8 +131,6 @@ final class PadBridgeMetalView: MTKView, MTKViewDelegate {
     private func drawLatestFrame(in view: MTKView) {
         guard let pixelBuffer = mailbox.takeLatest(),
               CVPixelBufferGetPlaneCount(pixelBuffer) == 2 else { return }
-
-        lastFrameArrival = CACurrentMediaTime()
 
         videoSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer),
                            height: CVPixelBufferGetHeight(pixelBuffer))

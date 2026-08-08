@@ -43,6 +43,7 @@ public:
 private:
     PadBridgeSocket socket_{kInvalidPadBridgeSocket};
     mutable std::mutex socketMutex_;
+    std::mutex sendMutex_;
     std::atomic_bool open_{false};
     bool sendAll(std::span<const std::uint8_t> bytes);
     bool receiveAll(std::span<std::uint8_t> bytes);

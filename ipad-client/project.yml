@@ -14,6 +14,7 @@ targets:
     sources:
       - path: Sources
       - path: Resources/Shaders.metal
+      - path: Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.padbridge.client
@@ -21,7 +22,7 @@ targets:
         INFOPLIST_FILE: Resources/Info.plist
         TARGETED_DEVICE_FAMILY: "2"
         SUPPORTS_MACCATALYST: false
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
     scheme:
       gatherCoverageData: false
-
