@@ -152,11 +152,11 @@ public sealed class PadBridgeSession : IAsyncDisposable
     private async Task<ConnectionEndpoint> ResolveEndpointAsync(
         AppSettings settings, CancellationToken cancellationToken)
     {
-        var discovered = Interlocked.Exchange(ref _discoveredEndpoint, null);
-        if (discovered is not null)
+        var cachedEndpoint = Interlocked.Exchange(ref _discoveredEndpoint, null);
+        if (cachedEndpoint is not null)
         {
-            Log($"Found active iPad at {discovered.Host}:{discovered.Port}.");
-            return discovered;
+            Log($"Found active iPad at {cachedEndpoint.Host}:{cachedEndpoint.Port}.");
+            return cachedEndpoint;
         }
 
         if (settings.ConnectionMode is ConnectionMode.Auto or ConnectionMode.Usb)
