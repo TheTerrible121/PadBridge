@@ -1,10 +1,12 @@
-name: Build Windows host
+name: Build complete Windows app
 
 on:
   workflow_dispatch:
   push:
     paths:
       - "windows-host/**"
+      - "windows-controller/**"
+      - "installer/**"
       - ".github/workflows/windows.yml"
 
 jobs:
@@ -13,17 +15,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Configure native host
         run: cmake -S windows-host -B windows-host/build -A x64
 
-      - name: Build
+      - name: Build native host
         run: cmake --build windows-host/build --config Release
 
-      - name: Test
+      - name: Test native protocol and parser
         run: ctest --test-dir windows-host/build -C Release --output-on-failure
+
+      - name: Publish one-click controller
+        run: >-
+          dotnet publish windows-controller/PadBridge.Controller.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --output dist
+          -p:PublishSingleFile=true
+          -p:DebugSymbols=false
+
+      - name: Add host and official FFmpeg build
+        shell: pwsh
+        run: |
+          Copy-Item windows-host/build/Release/padbridge_host.exe dist/
+          $release = Invoke-RestMethod -Headers @{ "User-Agent" = "PadBridge-GitHub-Actions" } `
+            https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest
+          $asset = $release.assets | Where-Object { $_.name -eq "ffmpeg-master-latest-win64-lgpl.zip" } | Select-Object -First 1
+          if (-not $asset) { throw "The expected FFmpeg win64 LGPL asset was not found." }
+          Invoke-WebRequest $asset.browser_download_url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-package
+          $ffmpeg = Get-ChildItem ffmpeg-package -Recurse -File -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpeg) { throw "ffmpeg.exe was not found in the downloaded archive." }
+          Copy-Item $ffmpeg.FullName dist/ffmpeg.exe
+          Copy-Item README.md,LICENSE,THIRD_PARTY_NOTICES.md dist/
+
+      - name: Verify packaged encoders and capture filter
+        shell: pwsh
+        run: |
+          $encoders = & dist/ffmpeg.exe -hide_banner -encoders 2>&1 | Out-String
+          $filters = & dist/ffmpeg.exe -hide_banner -filters 2>&1 | Out-String
+          if ($encoders -notmatch "h264_nvenc") { throw "Bundled FFmpeg lacks h264_nvenc." }
+          if ($filters -notmatch "ddagrab") { throw "Bundled FFmpeg lacks ddagrab." }
+          if (-not (Test-Path dist/PadBridge.exe)) { throw "PadBridge.exe was not published." }
+
+      - name: Create portable package
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath PadBridge-Windows-Portable.zip
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $env:PADBRIDGE_DIST = (Resolve-Path dist).Path
+          New-Item -ItemType Directory -Force release | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer/PadBridge.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PadBridge-Windows-host
-          path: windows-host/build/Release/padbridge_host.exe
+          name: PadBridge-Windows-complete
+          path: |
+            PadBridge-Windows-Portable.zip
+            release/PadBridge-Setup-1.0.0.exe
           if-no-files-found: error
