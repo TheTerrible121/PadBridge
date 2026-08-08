@@ -169,7 +169,7 @@ public partial class MainWindow : Window
         return ConnectionMode.Auto;
     }
 
-    private static int GetComboTagInt(ComboBox box, int fallback) =>
+    private static int GetComboTagInt(System.Windows.Controls.ComboBox box, int fallback) =>
         box.SelectedItem is ComboBoxItem item && int.TryParse(item.Tag?.ToString(), out var value)
             ? value : fallback;
 
